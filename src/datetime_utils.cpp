@@ -115,6 +115,7 @@ bool isMonth(const TCHAR* str, int* mon)
 }
 
 // Main "intellectual" engine for date parsing in different forms, try to eat user's shit
+// "hour" is used here as "determination mask" : 0 - fully determinated date, 1 - day and month, 2 - year only. 
 bool _parse_datestring(const TCHAR* str, FILETIME* out, int* order)
 {
 	int i, l, cnt;
