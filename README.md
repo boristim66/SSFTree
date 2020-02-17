@@ -15,7 +15,6 @@ src\ShowTreeExample:  sources of test application with VS2019 project
 src\ExtSources:      Third-party codes used
 
 TestData - dataset for application testing, obtained from
-
 https://nextstrain.org/flu/seasonal/h1n1pdm/ha/3y
 
 
