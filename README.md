@@ -8,7 +8,9 @@ VisualStudio community edition 2015,2017,2019 tested.
 src:
 
 NewickTree.cpp - Newick Tree recursive (:() library - tree loading, processing, storing and visualisation.
+
 datetime_utils.cpp  - processing date string in different forms (Gisaid, NCBI, gb, I hope, more)
+
 csv_utils.cpp - load/store csv files with escaping.
 
 src\ShowTreeExample:  sources of test application with VS2019 project
