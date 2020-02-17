@@ -1,4 +1,4 @@
-/*****************************************************************/
+
 Small, Simple and Fast Library for Windows  for Newick Tree Visualisation.
 
 Pure Windows API, C++, no frameworks.
