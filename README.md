@@ -2,7 +2,7 @@
 Small, Simple and Fast Library for Windows  for Newick Tree Visualisation.
 
 Pure Windows API, C++, no frameworks.
-UNICODE/ANSI compilation 
+UNICODE/ANSI compilation.
 VisualStudio community edition 2015,2017,2019 tested.
 
 src
