@@ -32,41 +32,39 @@ INT_PTR CALLBACK SelectSequence(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
 #include "DibWindow.h"
 
 
-typedef struct {
+typedef struct  tag_tpi {
 	NWKTREE_ENV tre;
 	DIBWND_INFO dbwi;
 
-// часть, касающаяся внутреннего обустройства локальной метабазы
-	std::vector< std::vector<std::_TString> *> stv; // загруженная база
-	int _icol_name, _icol_date;
-	DWORD low_time, high_time;
+// local database internals
+	std::vector< std::vector<std::_TString> *> stv; // "DB"
+	int _icol_name, _icol_date;  // Column numbers for name and date
+	DWORD low_time, high_time;   // date ranges 
+// system environment
+	std::_TString saved_path; //current workdir
+	tag_tpi() {
+		_icol_name = _icol_date = -1;
+		low_time = high_time = 0;
+	};
 } TREE_PROJ_INFO;
 
 
 
 //Переменные для отрисовки дерева
 extern CRITICAL_SECTION drtreeCRTS;
-static std::_TString saved_path; //Must be class or structure member.
-// Прототипы
-int process_newick_tree(NWKTREE_ENV *proj, const TCHAR *fn);
-void drawTreeWin(HWND hWnd, NWKTREE_ENV *proj); // Нарисовать дерево в размер окна
-int  drawTree(NWKTREE_ENV *prpj, LONG x, LONG y); // Чуть ниже, даются размеры окна
-void set_tree_sort_mode(NWKTREE_ENV *proj, TREE_SORT_MODE newmode);
-void identify_tree(struct tag_treenode * cur);
-int verify_tree(struct tag_treenode * tree, double root_dist);
-int tree_reroot(NWKTREE_ENV *proj, std::_TString &newrootnode);
-int write_newick_tree(NWKTREE_ENV* proj, const TCHAR* fn, bool fReplaceNames);
+
 
 
 // Заглушки для функций проекта 
 
-static const std::_TString _snam = TEXT("Strain");
-static const std::_TString _scolldate = TEXT("Raw Date");
+static const std::_TString _snam[]      = { TEXT("Strain") };
+static const std::_TString _scolldate[] = { TEXT("Raw Date"), TEXT("Collection Data") };
 
-static int _col_index(std::vector< std::vector<std::_TString> *> &stv, const std::_TString  &colname)
+static int _col_index(std::vector< std::vector<std::_TString> *> &stv, const std::_TString colname[])
 {
 	for (size_t i = 0; i < stv[0]->size(); ++i)
-		if ((*stv[0])[i] == colname)
+		for (size_t j = 0; j < colname->size(); ++j)
+		if ((*stv[0])[i] == colname[j])
 			return (int)i;
 	return -1;
 }
@@ -134,7 +132,7 @@ void getMinMaxTime(NWKTREE_ENV *tenv, DWORD *low_t, DWORD *high_t)
     *high_t = pi->high_time;
 }
 
-
+// Can we use metainformation for tree?
 bool isInternalDbUsed(NWKTREE_ENV *p) 
 {
 	TREE_PROJ_INFO *pi = (TREE_PROJ_INFO *)p;
@@ -143,7 +141,6 @@ bool isInternalDbUsed(NWKTREE_ENV *p)
 
 void Sample_DrawTree(HWND hWnd, NWKTREE_ENV *tre)
 {
-
 	if (!tre->fExpand)
 		drawTreeWin(hWnd, tre);  // scale tree to window size
 	else
@@ -190,8 +187,6 @@ std::_TString BrowseFile(HWND own, std::_TString &workdir, std::vector<std::_TSt
 	l = 0;
 	for (size_t i = 0; i < filters.size(); i++) {
 		_tcsncpy_s(filter + l, MAX_PATH - l, (filters)[i].c_str(), _Tsizeof(filter) - l); l += (int)(filters)[i].size() + 1;
-		//		_tcsncpy_s(filter + l, MAX_PATH - l, TEXT("*."), NUM_ARREL(filter) - l); l += 2;
-		//		_tcsncpy_s(filter + l, MAX_PATH - l, (filters)[i].c_str(), NUM_ARREL(filter) - l); l += (int)(filters)[i].size()+1;
 	} filter[l] = 0;
 
 	ofn.lpstrFilter = filter[0] ? filter : TEXT("All files\0*.*\0");
@@ -404,12 +399,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	}
 	case WM_SIZE:
 		return MsgSize(hWnd, message, wParam, lParam);
+	case WM_PAINT:
+		return MsgPaint(hWnd, message, wParam, lParam);
+
 	case WM_MOUSEWHEEL:
 		message = WM_VSCROLL;
 		if ((short)HIWORD(wParam) > 0)
 			wParam = SB_LINEUP;
 		else 
 			wParam = SB_LINEDOWN;
+		// drop down to scroll processing
 	case WM_VSCROLL:
 	case WM_HSCROLL:
 		return MsgScrollWindow(hWnd, message, wParam, lParam);
@@ -427,36 +426,33 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				DestroyWindow(hWnd);
 				break;
 			case ID_OPENMETADATA: {
+				TREE_PROJ_INFO* tre = (TREE_PROJ_INFO*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
 				std::_TString fname;
 				std::vector<std::_TString> filters;
 				filters.push_back(TEXT("Text with delimiters")); filters.push_back(TEXT("*.csv;*.tsv"));
-				if ((fname = BrowseFile(hWnd, saved_path, filters, OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST)).size()) {
+				if ((fname = BrowseFile(hWnd, tre->saved_path, filters, OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST)).size()) {
 					TCHAR symdelim = ';';
 					FILE *csvin = 0;
 					std::_TString myfn = fname;
 					if (!_tcsicmp(myfn.substr(myfn.find_last_of(TEXT(".")) + 1).c_str(), TEXT("tsv")))
 							symdelim = '\t';
-					TREE_PROJ_INFO *tre = (TREE_PROJ_INFO *)GetWindowLongPtr(hWnd, GWLP_USERDATA);
 					if (0 == _tfopen_s(&csvin, fname.c_str(), TEXT("rt")) ) {
 						c_csv_cleaninfo(tre->stv);
 						if (0 != c_csv_parser(csvin, tre->stv, symdelim, (TCHAR *)TEXT("")))
 						{
 							// Some error msg
 						}
-						else {
-							// предварительные действия
-							// 1. определяем номера колонок
+						else {	// Prepare ours "DB":
+							// 1. define column numbers by its names 
 							tre->_icol_name = _col_index(tre->stv, _snam);
 							tre->_icol_date = _col_index(tre->stv, _scolldate);
-							// 2. Мин и Макс время - инверсные 
+							// 2. set inverse seeds for min and max time calculation 
 							tre->low_time  = 0xFFFFFFFF; tre->high_time = 0;
-                            // 3. сортируем stv по именам штаммов для ускорения поиска
+                            // 3. sort stv by strain names for search speedup
 							qsort_s(&tre->stv[1], tre->stv.size()-1, sizeof(tre->stv[1]),  _compare_strains, &tre->_icol_name );
 							if (tre->tre.proot) {
-								EnterCriticalSection(&drtreeCRTS);
-								identify_tree(tre->tre.proot);
-								verify_tree(tre->tre.proot, 0.0);
-								LeaveCriticalSection(&drtreeCRTS);
+								newick_tree_identify(&tre->tre); // link to "database"
+								newick_tree_verify(&tre->tre);   // re-arrange according sort policy
 								Sample_DrawTree(hWnd, &tre->tre);
 							}
 						}
@@ -466,8 +462,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				break;
 			}
 			case ID_SAVEIMG: {
-				NWKTREE_ENV *tre = (NWKTREE_ENV *)GetWindowLongPtr(hWnd, GWLP_USERDATA);
-				if (tre->gHbm) {
+				TREE_PROJ_INFO* tre = (TREE_PROJ_INFO*)GetWindowLongPtr(hWnd, GWLP_USERDATA);				
+				if (tre->tre.gHbm) {
 					std::_TString fname;
 					const TCHAR* ext;
 					std::vector<std::_TString> filters;
@@ -475,7 +471,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 					filters.push_back(TEXT("Scalable Vector Graphics files")); filters.push_back(TEXT("*.svg"));
 					filters.push_back(TEXT("NEWICK tree files")); filters.push_back(TEXT("*.newick; *.nwk; *.dnd"));
 
-					fname = BrowseFile(hWnd, saved_path, filters, OFN_OVERWRITEPROMPT, true);
+					fname = BrowseFile(hWnd, tre->saved_path, filters, OFN_OVERWRITEPROMPT, true);
 					if (fname.size()) {
 						if (NULL != (ext = _tcsrchr(fname.c_str(), '.'))) {
 							if (!_tcsicmp(ext + 1, TEXT("bmp"))) {
@@ -483,7 +479,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 								break;
 							}
 						} 
-						write_newick_tree(tre, fname.c_str(), false);
+						newick_tree_write(&tre->tre, fname.c_str(), false);
 					}
 				}
 				break;
@@ -491,15 +487,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 			case ID_OPEN_TREE:
 			{
+				TREE_PROJ_INFO* tre = (TREE_PROJ_INFO*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
 				std::_TString fname;
 				std::vector<std::_TString> filters;
 				filters.push_back(TEXT("NEWICK tree files")); filters.push_back(TEXT("*.newick; *.nwk; *.dnd"));
-				fname = BrowseFile(hWnd, saved_path, filters, OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST, false);
+				fname = BrowseFile(hWnd, tre->saved_path, filters, OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST, false);
 				if (fname.size()) {
-					NWKTREE_ENV *tre = (NWKTREE_ENV *)GetWindowLongPtr(hWnd, GWLP_USERDATA);
-					if (!process_newick_tree(tre, fname.c_str())) {
-						tre->fExpand = false;
-						Sample_DrawTree(hWnd, tre);
+					if (!newick_tree_process(&tre->tre, fname.c_str())) {
+						tre->tre.fExpand = false;
+						Sample_DrawTree(hWnd, &tre->tre);
 						EnableMenuItem(GetMenu(hWnd), 1, MF_BYPOSITION | MF_ENABLED);
 						EnableMenuItem(GetMenu(hWnd), ID_SAVEIMG, MF_BYCOMMAND | MF_ENABLED);
 					}
@@ -519,7 +515,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 					tre->fTreeSortMode = static_cast<_tagTreeSort>(static_cast<int>(tre->fTreeSortMode) + 1);
 					if (tre->fTreeSortMode >= TREE_ALL_MODES)
 						tre->fTreeSortMode = TREE_BY_DISTANCE;
-					set_tree_sort_mode(tre, tre->fTreeSortMode);
+					newick_tree_verify(tre); // Apply new sort mode
 				}
 				Sample_DrawTree(hWnd, tre);
 			}
@@ -528,7 +524,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				std::_TString seq_name;
 				if (IDOK == DialogBoxParam(hInst, MAKEINTRESOURCE(IDD_DIALOG1), hWnd, SelectSequence, (LPARAM)&seq_name) && seq_name.size()) {
 					NWKTREE_ENV *tre = (NWKTREE_ENV *)GetWindowLongPtr(hWnd, GWLP_USERDATA);
-					if (!tree_reroot(tre, seq_name)) 
+					if (!newick_tree_reroot(tre, seq_name)) 
 						Sample_DrawTree(hWnd, tre);
 				 }
 			}
@@ -540,9 +536,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
 
-
-    case WM_PAINT:
-		return MsgPaint(hWnd, message, wParam, lParam);
     case WM_DESTROY:
         PostQuitMessage(0);
         break;

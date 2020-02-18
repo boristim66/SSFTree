@@ -16,14 +16,15 @@ void nwk_format_printable_name(NWKTREE_ENV *, int accindex, std::_TString  &astr
 
 void getMinMaxTime(NWKTREE_ENV *, DWORD *low_t, DWORD *high_t);
 
+bool isInternalDbUsed(NWKTREE_ENV*);
+
 #ifndef _NWK_TREE_STANDALONE
 extern "C" LRESULT VisualiseString(LPTSTR format, ...);
 extern "C" LRESULT VisualiseStringAsync(LPTSTR format, ...);
-bool isInternalDbUsed(NWKTREE_ENV*);
 #else
 #define VisualiseString
-#define isInternalDbUsed(a)  0
 #endif
+
 
 /***************Newick Tree Interfaces********************************/
 // Global and static variables are used here to save recursive stack
@@ -32,6 +33,8 @@ typedef enum {
 	TP_DIST,
 } TREE_PARSENG;
 
+void draw_legend(NWKTREE_ENV* prpj, LONG x, LONG y);
+
 void DrawThinLine(POINT from, POINT to, RGBQUAD color);
 void DrawLabelText(const TCHAR* ltext, int ltextlen, RECT* pos);
 
@@ -39,19 +42,23 @@ void DrawThinLineSVG(POINT from, POINT to, RGBQUAD color);
 void DrawLabelTextSVG(const TCHAR* ltext, int ltextlen, RECT* pos);
 
 int drawTree(NWKTREE_ENV* prpj, LONG x, LONG y);
+
 static void set_tree_metrics(NWKTREE_ENV* prpj, LONG x, LONG y, POINT* pictdims);
 void drawtrerec(struct tag_treenode* tree);
 
 // Globals - stack overload protection
 CRITICAL_SECTION drtreeCRTS; // Static guard
+// IN
 int _gTreeIsNucleotic = -1;
-static int _gNodeeCount = 0;
 static bool _fgfReplaceNames;
 static FILE  *_fgOutfile;
 NWKTREE_ENV    *_g_curprj;
+// OUT, set by verify_tree
+static int _gNodeeCount = 0;
 static double _gMaxDist = 0;
 static struct tag_treenode * _gMaxLenNode = NULL;
-static void (*_pfdrawline)(POINT, POINT, RGBQUAD) = DrawThinLine;
+// draw functions
+static void (*_pfdrawline)(POINT, POINT, RGBQUAD)    = DrawThinLine;
 static void (*_pfdrawtext)(const TCHAR*, int, RECT*) = DrawLabelText;
 
 
@@ -71,7 +78,7 @@ void char2TString(char *p, std::_TString &s)
 #endif
 }
 
-void identify_tree(struct tag_treenode * cur)
+static void identify_tree(struct tag_treenode * cur)
 {//Statics are used to avoid stack overloading, protected by critical section
 	static std::map<std::_TString, int>::iterator it;
 	static const TCHAR *p, *pnm;
@@ -96,7 +103,7 @@ void identify_tree(struct tag_treenode * cur)
 }
 
 
-int verify_tree(struct tag_treenode * tree, double root_dist)
+static int verify_tree(struct tag_treenode * tree, double root_dist)
 {
 
 	tree->rootdist = root_dist;
@@ -136,20 +143,48 @@ int verify_tree(struct tag_treenode * tree, double root_dist)
 	return tree->num_descend;
 }
 
-void set_tree_sort_mode(NWKTREE_ENV *proj, TREE_SORT_MODE newmode)
+
+int newick_tree_verify(NWKTREE_ENV* proj)
 {
 	if (proj && proj->proot) {
 		EnterCriticalSection(&drtreeCRTS);
 		_g_curprj = proj;
 		_gMaxDist = 0;
 		_gMaxLenNode = NULL;
+		_gNodeeCount = 0;
+		verify_tree(proj->proot, 0);
+		proj->maxdistnode = _gMaxLenNode;
+		LeaveCriticalSection(&drtreeCRTS);
+	}
+	return _gNodeeCount;
+}
+
+void newick_tree_identify(NWKTREE_ENV* proj)
+{
+	EnterCriticalSection(&drtreeCRTS);
+	_g_curprj = proj;
+	if (isInternalDbUsed(proj)) {
+		_gTreeIsNucleotic = -1;
+		identify_tree(proj->proot);
+	}
+	LeaveCriticalSection(&drtreeCRTS);
+}
+
+void newick_tree_set_sort_mode(NWKTREE_ENV *proj, TREE_SORT_MODE newmode)
+{
+	if (proj && proj->proot) {
+		EnterCriticalSection(&drtreeCRTS);
+		_g_curprj = proj;
+		_gMaxDist = 0;
+		_gMaxLenNode = NULL;
+		_gNodeeCount = 0;
 		verify_tree(proj->proot, 0.0);
 		LeaveCriticalSection(&drtreeCRTS);
 	}
 }
 
 
-int tree_reroot(NWKTREE_ENV *proj, std::_TString &newrootnode)
+int newick_tree_reroot(NWKTREE_ENV *proj, std::_TString &newrootnode)
 {
 	struct tag_treenode *cur, /* *p, */ *newroot, *nextparent, *nextroot;
 	std::map<std::_TString, tag_treenode *>::iterator it;
@@ -187,18 +222,13 @@ int tree_reroot(NWKTREE_ENV *proj, std::_TString &newrootnode)
 	proj->proot->childs.erase(proj->proot->childs.begin() + i);
 	proj->proot->parent = nextroot;
 	proj->proot = newroot;
-	EnterCriticalSection(&drtreeCRTS);
-	_g_curprj = proj;
-	_gMaxDist = 0;
-	_gMaxLenNode = NULL;
-	verify_tree(proj->proot, 0);
-	proj->maxdistnode = _gMaxLenNode;
-	LeaveCriticalSection(&drtreeCRTS);
+
+	newick_tree_verify(proj);
 	return 0;
 }
 
 
-int process_newick_tree(NWKTREE_ENV *proj, const TCHAR *fn)
+int newick_tree_process(NWKTREE_ENV *proj, const TCHAR *fn)
 {
 #define MAX_NUMSZ 20
 	char buf[4096 + 1], bufnm[256], ch, *ptr;
@@ -306,22 +336,9 @@ int process_newick_tree(NWKTREE_ENV *proj, const TCHAR *fn)
 			}
 		}
 		fclose(in);
-		EnterCriticalSection(&drtreeCRTS);
-		_g_curprj = proj;
-		if (isInternalDbUsed(proj)) {
-			_gTreeIsNucleotic = -1;
-			identify_tree(proj->proot);
-		}
-		LeaveCriticalSection(&drtreeCRTS);
-
-		EnterCriticalSection(&drtreeCRTS);
-		_g_curprj = proj;
-		_gNodeeCount = 0;
-		_gMaxDist = 0;
-		_gMaxLenNode = NULL;
-		verify_tree(proj->proot, 0.0);
-		proj->maxdistnode = _gMaxLenNode;
-		LeaveCriticalSection(&drtreeCRTS);
+	
+		newick_tree_identify(proj);
+		newick_tree_verify(proj);
 
 	}
 	return error;
@@ -385,7 +402,7 @@ void printtree_recursive(tag_treenode *cur)
 	}
 }
 
-int write_newick_tree(NWKTREE_ENV *proj, const TCHAR *fn, bool fReplaceNames)
+int newick_tree_write(NWKTREE_ENV *proj, const TCHAR *fn, bool fReplaceNames)
 {
 	FILE *out;
 	bool done = false;
@@ -426,6 +443,8 @@ int write_newick_tree(NWKTREE_ENV *proj, const TCHAR *fn, bool fReplaceNames)
 						" xmlns = \"http://www.w3.org/2000/svg\">\n"
 						"<style>\n"	".small{ font: normal 14px \"Times New Roman\"; } \n" "</style>\n"), 
 					pd.x, pd.y, pd.x, pd.y);
+
+				draw_legend(proj, 40, pd.y/10);
 
 				proj->_gY = 0;
 				proj->_gYStep = (proj->fExpand == false && pd.y) ? 1 : OFFSET_MARGINS;
@@ -645,15 +664,15 @@ void drawtrerec(struct tag_treenode *tree)
 		_g_curprj->_gY += _g_curprj->_gYStep;
 
 		if (!ClipLine(&from, &to, &_g_curprj->_gclipR)) return;
-		ci = -1;
-
-		if (_g_curprj &&  _g_curprj->_g_prgb && tree->accindex >= 0) {
-			dt = tree->tsKey ? tree->tsKey : get_timetsamp(_g_curprj, tree->accindex);
-			if ((ci = (int)((dt - _g_curprj->_g_timebase)*_g_curprj->_g_timescale)) > NUM_PAL_ENTRIES - 1)
-				ci = NUM_PAL_ENTRIES - 1;
+		if (from.x != to.x) { // Small optimisaton - skip zero-length lines
+			ci = -1;
+			if (_g_curprj && _g_curprj->_g_prgb && tree->accindex >= 0) {
+				dt = tree->tsKey ? tree->tsKey : get_timetsamp(_g_curprj, tree->accindex);
+				if ((ci = (int)((dt - _g_curprj->_g_timebase) * _g_curprj->_g_timescale)) > NUM_PAL_ENTRIES - 1)
+					ci = NUM_PAL_ENTRIES - 1;
+			}
+			(*_pfdrawline)(from, to, (ci >= 0 ? _g_curprj->_g_prgb[ci] : _gc));
 		}
-		(*_pfdrawline)(from, to, (ci >= 0 ? _g_curprj->_g_prgb[ci] : _gc));
-
 		if (_g_curprj->_gYStep >= _g_curprj->_GTtm.tmHeight / 3) {
 			pos = { to.x, _g_curprj->_gYBase ? _g_curprj->_gYBase - (to.y + _g_curprj->_GTtm.tmHeight / 2) : to.y - _g_curprj->_GTtm.tmHeight / 2, 0, 0 };
 			assert(tree->nodname.size() < 256);
@@ -680,7 +699,13 @@ void drawtrerec(struct tag_treenode *tree)
 
 RGBQUAD * get_palette(TCHAR *sch, int);
 
-
+static int DrawText_Width(HDC dc, TCHAR* text, int *pWidth)
+{
+	RECT pos = { 0 };
+	int height = DrawText(dc, text, _tcslen(text), &pos, DT_CALCRECT);
+	*pWidth = pos.right - pos.left;
+	return height;
+}
 
 
 static void set_tree_metrics(NWKTREE_ENV* prpj, LONG x, LONG y, POINT *pictdims)
@@ -690,6 +715,8 @@ static void set_tree_metrics(NWKTREE_ENV* prpj, LONG x, LONG y, POINT *pictdims)
 	int tree_height = prpj->proot->num_descend;
 	int expanded_tree_height = OFFSET_MARGINS * (2 + prpj->proot->num_descend);
 	int mul_ratio = (int)((tree_height / prpj->proot->maxChildDist) + 0.5);  // для "квадратности" дерева
+
+
 
 	prpj->gmy = (fxpand == false && y) ? ((double)y) / tree_height : 1.0;
 	prpj->gmx = (fxpand == false && x) ? ((double)x) / tree_height : 1.0, prpj->gmx *= mul_ratio;
@@ -715,9 +742,12 @@ static void set_tree_metrics(NWKTREE_ENV* prpj, LONG x, LONG y, POINT *pictdims)
 		ReleaseDC(prpj->hWndDib, hDC);
 	}
 
+	// y = 0 : number of descend (small); y = -1:  (number of descend + 2)*margins (big);  other: real window size
+	int h = y ? (y != (LONG)(-1) ? y : expanded_tree_height)  : tree_height;
+	int w = x ? x  : tree_height;
 
-	int h = y ? (y != (LONG)(-1) ? y : expanded_tree_height) + 2 * OFFSET_MARGINS : tree_height + 2 * OFFSET_MARGINS;
-	int w = x ? x + 2 * OFFSET_MARGINS : tree_height + 2 * OFFSET_MARGINS;
+	h += 2 * OFFSET_MARGINS;
+	w += 2 * OFFSET_MARGINS;
 
 
 	RECT pos = { 0, 0, 0, 0 };
@@ -739,13 +769,16 @@ static void set_tree_metrics(NWKTREE_ENV* prpj, LONG x, LONG y, POINT *pictdims)
 
     {
 		DWORD low_t = 0, high_t = 0;
+		if (prpj->_g_prgb)  delete[] (prpj->_g_prgb), prpj->_g_prgb = NULL;
 		getMinMaxTime(prpj, &low_t, &high_t);
 		if (low_t && high_t) {
 			prpj->_g_timebase = low_t; prpj->_g_timescale = ((double)NUM_PAL_ENTRIES) / (high_t - low_t);
-			if (prpj->_g_prgb) delete[] prpj->_g_prgb;
 			prpj->_g_prgb = get_palette((TCHAR*)TEXT("kRry"), NUM_PAL_ENTRIES);
 		}
 	}
+
+
+
 
 	pictdims->x = w;
 	pictdims->y = h;
@@ -753,6 +786,95 @@ static void set_tree_metrics(NWKTREE_ENV* prpj, LONG x, LONG y, POINT *pictdims)
 }
 
 
+
+void draw_legend(NWKTREE_ENV* prpj, LONG x, LONG y)
+{
+	// установим scalebar as 1/10 from width
+	RECT pos;
+	double scbar_len = prpj->proot->maxChildDist / 10;
+	double nd = log10(scbar_len);
+	double tenpow = round(nd);
+	int numofdigits, len_legend;
+	TCHAR pform[32], legend[32];
+	scbar_len /= pow(10, tenpow);
+	if (scbar_len <= 0.2)
+		scbar_len = 0.2;
+	else if (scbar_len <= 0.5)
+		scbar_len = 0.5;
+	else
+		scbar_len = 1.0;
+	scbar_len *= pow(10, tenpow);
+	int sbar_line_len = (int)(prpj->gmx * scbar_len + 0.5);
+	int legend_offset, llen;
+	if (scbar_len >= 1)
+		numofdigits = 0;
+	else
+		numofdigits = (int)fabs(tenpow) + 1;
+	_stprintf(pform, TEXT("%%.%df"), numofdigits);
+	_stprintf(legend, pform, scbar_len);
+
+	DrawText(prpj->_gm_hDC, legend, llen=(int)_tcslen(legend), &pos, DT_CALCRECT);
+	len_legend = pos.right - pos.left;
+	legend_offset = (sbar_line_len - len_legend) / 2;
+	
+	POINT from = { x,  y + 2 };
+	POINT to =   { x + sbar_line_len,  y + 2 };
+	POINT imm;
+
+	(*_pfdrawline)(from, to, _gc);
+	from.y = to.y = y-1;
+	imm = { x, y + 5 };
+	(*_pfdrawline)(imm, from, _gc);
+	to.x--,	imm.x = to.x;
+	(*_pfdrawline)(imm, to, _gc);
+
+	pos = { x + legend_offset, y + 2 + prpj->_GTtm.tmHeight / 4, 0, 0 };
+	(*_pfdrawtext)(legend, llen, &pos);
+
+#define GRAD_BAR_LEN 128
+
+	 if (prpj->_g_prgb) {
+		 
+		 int diffh = prpj->_GTtm.tmHeight + 10;
+		 int bar_y = y + diffh,
+			 bar_x = x + (sbar_line_len - GRAD_BAR_LEN) / 2;
+
+		 from = { bar_x,  prpj->fAscend ? y - diffh : bar_y };
+		 to = from, to.y += prpj->fAscend ? -prpj->_GTtm.tmHeight : prpj->_GTtm.tmHeight;
+
+		 for (int i = 0; i < NUM_PAL_ENTRIES; i += NUM_PAL_ENTRIES/ GRAD_BAR_LEN) {
+			(*_pfdrawline)(from, to, prpj->_g_prgb[i]);
+			++to.x; ++from.x;
+		}
+
+		SYSTEMTIME st;
+		TCHAR tmbuf[32];
+		FILETIME ft = { 0, _g_curprj->_g_timebase };
+  // Draw left label
+		FileTimeToSystemTime(&ft, &st);
+		_stprintf(tmbuf, TEXT("%4d.%02d"), st.wYear, st.wMonth);
+		DrawText(prpj->_gm_hDC, tmbuf, llen = (int)_tcslen(tmbuf), &pos, DT_CALCRECT);
+		len_legend = pos.right - pos.left;
+		bar_y += prpj->_GTtm.tmHeight;
+		pos = { bar_x  - len_legend/2,   bar_y + 2 };
+		(*_pfdrawtext)(tmbuf, llen, &pos);
+
+  // Draw right label
+		ft.dwHighDateTime +=  (DWORD)(NUM_PAL_ENTRIES/_g_curprj->_g_timescale);
+		FileTimeToSystemTime(&ft, &st);
+		_stprintf(tmbuf, TEXT("%4d.%02d"), st.wYear, st.wMonth);
+		DrawText(prpj->_gm_hDC, tmbuf, llen = (int)_tcslen(tmbuf), &pos, DT_CALCRECT);
+		len_legend = pos.right - pos.left;
+		pos.left = bar_x + GRAD_BAR_LEN  - len_legend/2;
+		(*_pfdrawtext)(tmbuf, llen, &pos);
+
+
+
+	}
+
+
+
+}
 
 
 int drawTree(NWKTREE_ENV *prpj, LONG x, LONG y)
@@ -801,6 +923,8 @@ int drawTree(NWKTREE_ENV *prpj, LONG x, LONG y)
 		drawtrerec(prpj->proot);
 		LeaveCriticalSection(&drtreeCRTS);
 
+		draw_legend(prpj, 3 * OFFSET_MARGINS, sz_pict.y / 2);
+
 #ifndef _NWK_TREE_STANDALONE
 #if !defined _UZE_NEW_DIBIFACE
 		SendMessage(prpj->hWndDib, DBWCM_SETOPTIONS, DBW_OPT_SET, (LPARAM)DBW_OPT_DIBHANDLE);
@@ -837,4 +961,27 @@ void drawTreeWin(HWND hWnd, NWKTREE_ENV *proj)
 	rc.bottom -= 2 * OFFSET_MARGINS;
 	rc.right -= 2 * OFFSET_MARGINS;
 	drawTree(proj, rc.right, rc.bottom);
+}
+
+
+
+#include <stack>
+// seed for non-recursive variant
+static void contPreOrder(tag_treenode* top) {
+	std::stack<tag_treenode*> st;
+
+	while (top != NULL || !st.empty()) {		
+		if (!st.empty()) {
+			top = st.top(), st.pop();
+		}
+		while (top != NULL) {			
+		// do some work	// top.treatment();
+			size_t nchild = top->childs.size();
+			if (nchild) { 
+				for (size_t i = 0; i < nchild - 1; ++i)        // if (top.right != NULL) 
+					st.push(top->childs[nchild - 1 - i]);          // st.push(top.right);
+				top = top->childs[0];	                       // top = top.left;
+			} 
+		}
+	}
 }

@@ -1,5 +1,11 @@
 #pragma once
 
+#include <string>
+#include <map>
+#include <vector>
+#include <algorithm>
+#include <assert.h>
+
 #define _Tsizeof(a) sizeof(a)/sizeof((a)[0])
 
 #ifdef _UNICODE
@@ -8,11 +14,6 @@
 #else
 #define _TString string
 #endif
-#include <string>
-#include <map>
-#include <vector>
-#include <algorithm>
-#include <assert.h>
 
 #define STARTS_WITH(a, patt)  ((a) == strstr((a),patt))
 #define STARTS_WITHW(a, patt)  ((a) == _tcsstr((a),patt))
@@ -119,3 +120,14 @@ typedef struct {
 	POINT screenpix;
 	int xvscroll, yhscroll;
 } TKH_VM;
+
+// newick tree publics functions
+int  newick_tree_process(NWKTREE_ENV* proj, const TCHAR* fn);                    // load from file
+int  newick_tree_write(NWKTREE_ENV* proj, const TCHAR* fn, bool fReplaceNames);  // store [rerooted] to file 
+
+void drawTreeWin(HWND hWnd, NWKTREE_ENV* proj); // Нарисовать дерево в размер окна
+int  drawTree(NWKTREE_ENV* prpj, LONG x, LONG y); // Чуть ниже, даются размеры окна
+
+void newick_tree_identify(NWKTREE_ENV* proj); // Link tree with user-defined metainformations
+int  newick_tree_verify(NWKTREE_ENV* proj);   // re-calculate and re-sort 
+int  newick_tree_reroot(NWKTREE_ENV* proj, std::_TString& newrootnode);  // re-root
